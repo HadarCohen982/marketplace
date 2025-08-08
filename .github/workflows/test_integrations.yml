@@ -30,7 +30,6 @@ jobs:
           python -m pip install -e ./packages/mp
 
       - name: Run integration tests
-        id: test
         env:
           GITHUB_PR_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
