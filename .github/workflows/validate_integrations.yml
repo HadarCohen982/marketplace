@@ -1,88 +1,53 @@
 name: Validate Marketplace Integrations
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened]
 
-# Default permissions are read-only for security.
 permissions:
   contents: read
 
 jobs:
-  # ------ JOB 1: Run Validation (Low Privilege) ------
-  # This job runs the contributor's code with no write permissions.
-  run-validation:
-    name: Run Validation
+  validate:
+    name: Run Validation on PR code
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository at PR head
+      - name: Checkout PR code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install mp package
+      - name: Install mp + deps
         run: |
-          pip install --upgrade pip
-          pip install -e ./packages/mp
+          python -m pip install --upgrade pip
+          python -m pip install -e ./packages/mp
 
       - name: Run Validations
-        id: validate
-        env:
-          GITHUB_PR_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          mp config --marketplace-path . --processes 10 --display-config
-          mp validate --repository third_party --only-pre-build
+          mkdir -p artifacts
+          mp config --marketplace-path . --processes 10 --display-config || true
+          if ! mp validate --repository third_party --only-pre-build > artifacts/validation_report.md 2>&1; then
+            echo "::error title=Marketplace Validation Failed::See report artifact"
+            exit 1
+          fi
+
+      - name: Ensure report exists even on success
+        if: success()
+        run: |
+          mkdir -p artifacts
+          [ -f artifacts/validation_report.md ] || echo "Validation passed ✅" > artifacts/validation_report.md
 
       - name: Upload Validation Report
-        # Always upload the report artifact, regardless of success or failure.
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: validation-report-${{ github.run_id }}
-          path: ./artifacts/validation_report.md
-          retention-days: 1
-
-  # ------ JOB 2: Report Validation Failure (High Privilege) ------
-  # This job has write permissions but does not run contributor code.
-  report-validation-failure:
-    name: Post Validation Failure Comment
-    runs-on: ubuntu-latest
-    # This job ONLY runs if the 'run-validation' job fails.
-    if: failure()
-    needs: run-validation
-    permissions:
-      pull-requests: write
-      
-    steps:
-      - name: Download validation artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: validation-report-${{ github.run_id }}
-          path: ./artifacts
-          
-      - name: Comment on PR with Validation Report
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const reportPath = './artifacts/validation_report.md';
-            if (!fs.existsSync(reportPath)) {
-              console.log('Validation report file not found.');
-              return;
-            }
-            const reportBody = fs.readFileSync(reportPath, 'utf8');
-            const finalComment = `❌ **Marketplace Validation Failed**\n<details>\n<summary>Click to view the full validation report</summary>\n\n---\n${reportBody}\n</details>`;
-            
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: finalComment
-            });
-
+          name: validation-report
+          path: artifacts/validation_report.md
+          retention-days: 3
