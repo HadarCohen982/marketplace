@@ -2,10 +2,11 @@ name: Validate Commenter
 
 on:
   workflow_run:
-    workflows: ["Validate Marketplace Integrations"]  # Must match Workflow 1 name exactly
+    workflows: ["Validate Marketplace Integrations"]  # must match Workflow 1 name exactly
     types: [completed]
 
 permissions:
+  actions: read            # <-- needed to list/download artifacts from the triggering run
   contents: read
   pull-requests: write
 
@@ -17,17 +18,18 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion != 'success' }}
 
     steps:
+      - name: Debug payload (first 120 lines)
+        run: |
+          echo 'head_sha: ${{ github.event.workflow_run.head_sha }}'
+          echo '${{ toJson(github.event) }}' | head -n 120
+
       - name: Resolve PR number (handles forks too)
         id: findpr
         uses: actions/github-script@v7
         with:
           script: |
             const run = context.payload.workflow_run;
-
-            // Try payload's PR array first
             let pr = (run.pull_requests && run.pull_requests[0]) || null;
-
-            // Fallback: find PR by commit SHA
             if (!pr) {
               const {owner, repo} = context.repo;
               const sha = run.head_sha;
@@ -36,12 +38,8 @@ jobs:
               });
               pr = prs[0] || null;
             }
-
-            if (!pr) {
-              core.setFailed('Could not resolve PR for this workflow_run.');
-            } else {
-              core.setOutput('pr_number', String(pr.number));
-            }
+            if (!pr) core.setFailed('Could not resolve PR for this workflow_run.');
+            else core.setOutput('pr_number', String(pr.number));
 
       - name: Find validation-report artifact
         id: meta
@@ -50,17 +48,10 @@ jobs:
           script: |
             const {owner, repo} = context.repo;
             const run_id = context.payload.workflow_run.id;
-
-            const {data: list} = await github.rest.actions.listWorkflowRunArtifacts({
-              owner, repo, run_id
-            });
-
+            const {data: list} = await github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id });
             const art = list.artifacts.find(a => a.name === 'validation-report');
-            if (!art) {
-              core.setFailed('validation-report artifact not found.');
-            } else {
-              core.setOutput('artifact_id', String(art.id));
-            }
+            if (!art) core.setFailed('validation-report artifact not found.');
+            else core.setOutput('artifact_id', String(art.id));
 
       - name: Download artifact zip
         uses: actions/github-script@v7
@@ -71,11 +62,9 @@ jobs:
             const fs = require('fs');
             const {owner, repo} = context.repo;
             const id = Number(process.env.ART_ID);
-
             const {data} = await github.rest.actions.downloadArtifact({
               owner, repo, artifact_id: id, archive_format: 'zip'
             });
-
             fs.writeFileSync('artifact.zip', Buffer.from(data));
 
       - name: Unzip artifact
@@ -88,7 +77,6 @@ jobs:
             const fs = require('fs');
             const pr = Number('${{ steps.findpr.outputs.pr_number }}');
             const body = fs.readFileSync('artifacts/validation_report.md','utf8');
-
             const finalComment = `❌ **Marketplace Validation Failed**
 <details>
 <summary>Click to view the full validation report</summary>
@@ -97,7 +85,6 @@ jobs:
 
 ${body}
 </details>`;
-
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
