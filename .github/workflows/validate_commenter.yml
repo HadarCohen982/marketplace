@@ -14,11 +14,10 @@ jobs:
   comment:
     name: Post report to PR
     runs-on: ubuntu-latest
-    # Only comment when validation failed; remove this line to always comment.
     if: ${{ github.event.workflow_run.conclusion != 'success' }}
 
     steps:
-      - name: Resolve PR number
+      - name: Resolve PR number (handles forks)
         id: findpr
         uses: actions/github-script@v7
         with:
@@ -26,13 +25,36 @@ jobs:
             const run = context.payload.workflow_run;
             let pr = (run.pull_requests && run.pull_requests[0]) || null;
 
+            // Fallback 1: find by commit SHA (works for same-repo PRs)
             if (!pr) {
               const { owner, repo } = context.repo;
               const sha = run.head_sha;
-              const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              const { data: prsBySha } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
                 owner, repo, commit_sha: sha
               });
-              pr = prs[0] || null;
+              pr = prsBySha[0] || null;
+            }
+
+            // Fallback 2 (forks): find by head "owner:branch"
+            if (!pr) {
+              const headRepo = run.head_repository && run.head_repository.full_name; // "user/fork"
+              const headBranch = run.head_branch;                                    // "feature"
+              if (headRepo && headBranch) {
+                const headParam = `${headRepo.split('/')[0]}:${headBranch}`;
+                const { owner, repo } = context.repo;
+
+                const { data: openPRs } = await github.rest.pulls.list({
+                  owner, repo, state: 'open', head: headParam, per_page: 1
+                });
+                pr = openPRs[0] || null;
+
+                if (!pr) {
+                  const { data: closedPRs } = await github.rest.pulls.list({
+                    owner, repo, state: 'closed', head: headParam, per_page: 1
+                  });
+                  pr = closedPRs[0] || null;
+                }
+              }
             }
 
             if (!pr) {
@@ -48,17 +70,10 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const run_id = context.payload.workflow_run.id;
-
-            const { data: list } = await github.rest.actions.listWorkflowRunArtifacts({
-              owner, repo, run_id
-            });
-
+            const { data: list } = await github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id });
             const art = list.artifacts.find(a => a.name === 'validation-report');
-            if (!art) {
-              core.setFailed('validation-report artifact not found.');
-            } else {
-              core.setOutput('artifact_id', String(art.id));
-            }
+            if (!art) core.setFailed('validation-report artifact not found.');
+            else core.setOutput('artifact_id', String(art.id));
 
       - name: Download artifact zip
         id: dl
