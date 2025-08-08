@@ -2,7 +2,7 @@ name: Validate Commenter
 
 on:
   workflow_run:
-    workflows: ["Validate Marketplace Integrations"]
+    workflows: ["Validate Marketplace Integrations"]  # Must match Workflow 1 name exactly
     types: [completed]
 
 permissions:
@@ -13,70 +13,83 @@ jobs:
   comment:
     name: Post report to PR
     runs-on: ubuntu-latest
+    # Only comment when validation failed; remove this line to always comment.
     if: ${{ github.event.workflow_run.conclusion != 'success' }}
 
     steps:
-      - name: Derive PR number and fetch artifact metadata
-        id: meta
+      - name: Resolve PR number (handles forks too)
+        id: findpr
         uses: actions/github-script@v7
         with:
           script: |
             const run = context.payload.workflow_run;
-            const pr = (run.pull_requests && run.pull_requests[0]) || null;
+
+            // Try payload's PR array first
+            let pr = (run.pull_requests && run.pull_requests[0]) || null;
+
+            // Fallback: find PR by commit SHA
             if (!pr) {
-              core.setFailed('No PR is associated with this workflow_run.');
-              return;
+              const {owner, repo} = context.repo;
+              const sha = run.head_sha;
+              const {data: prs} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner, repo, commit_sha: sha
+              });
+              pr = prs[0] || null;
             }
+
+            if (!pr) {
+              core.setFailed('Could not resolve PR for this workflow_run.');
+            } else {
+              core.setOutput('pr_number', String(pr.number));
+            }
+
+      - name: Find validation-report artifact
+        id: meta
+        uses: actions/github-script@v7
+        with:
+          script: |
             const {owner, repo} = context.repo;
+            const run_id = context.payload.workflow_run.id;
+
             const {data: list} = await github.rest.actions.listWorkflowRunArtifacts({
-              owner, repo, run_id: run.id
+              owner, repo, run_id
             });
+
             const art = list.artifacts.find(a => a.name === 'validation-report');
             if (!art) {
               core.setFailed('validation-report artifact not found.');
-              return;
+            } else {
+              core.setOutput('artifact_id', String(art.id));
             }
-            core.setOutput('pr_number', pr.number.toString());
-            core.setOutput('artifact_id', art.id.toString());
 
       - name: Download artifact zip
         uses: actions/github-script@v7
         env:
-          artifact_id: ${{ steps.meta.outputs.artifact_id }}
+          ART_ID: ${{ steps.meta.outputs.artifact_id }}
         with:
           script: |
             const fs = require('fs');
             const {owner, repo} = context.repo;
-            const id = Number(process.env.artifact_id);
+            const id = Number(process.env.ART_ID);
+
             const {data} = await github.rest.actions.downloadArtifact({
               owner, repo, artifact_id: id, archive_format: 'zip'
             });
+
             fs.writeFileSync('artifact.zip', Buffer.from(data));
 
       - name: Unzip artifact
         run: unzip -o artifact.zip -d artifacts
-
-      - name: Sanitize report
-        run: |
-          python - << 'PY'
-import re
-p='artifacts/validation_report.md'
-t=open(p,'r',encoding='utf-8').read()
-t=re.sub(r'@', '@\u200b', t)  # prevent @ mentions
-MAX=50000
-if len(t) > MAX:
-    t = t[:MAX] + "\n\n…truncated…"
-open(p,'w',encoding='utf-8').write(t)
-PY
 
       - name: Post PR comment
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            const pr = Number('${{ steps.findpr.outputs.pr_number }}');
             const body = fs.readFileSync('artifacts/validation_report.md','utf8');
-            const finalComment =
-`❌ **Marketplace Validation Failed**
+
+            const finalComment = `❌ **Marketplace Validation Failed**
 <details>
 <summary>Click to view the full validation report</summary>
 
@@ -84,9 +97,10 @@ PY
 
 ${body}
 </details>`;
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: Number('${{ steps.meta.outputs.pr_number }}'),
+              issue_number: pr,
               body: finalComment
             });
