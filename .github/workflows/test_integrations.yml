@@ -1,4 +1,4 @@
-name: Test Integrations
+name: Test Marketplace Integrations
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   run-tests:
-    name: Run Tests
+    name: Run Tests on Pr code
     runs-on: ubuntu-latest
 
     steps:
