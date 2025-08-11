@@ -67,7 +67,7 @@ class TestSetUserPermissions:
 
         SetUserPermissions.main()
 
-        assert len(script_session.request_history) == 1
+        assert len(script_session.request_history) == 15
         request = script_session.request_history[0].request
         assert request.url.path.endswith("/promoteChatMember")
         assert request.kwargs["data"] == {
