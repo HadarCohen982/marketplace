@@ -48,7 +48,7 @@ class TestGetMessages:
         GetMessages.main()
 
         # Assert that the correct API call was made
-        assert len(script_session.request_history) == 15
+        assert len(script_session.request_history) == 16
         request = script_session.request_history[0].request
         assert request.url.path.endswith("/getUpdates")
         assert request.kwargs["params"] == {
